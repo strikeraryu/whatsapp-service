@@ -19,5 +19,6 @@ class Action(db.Model):
     action_type = db.Column(db.Enum(ActionType), nullable=False)
     container_id = db.Column(db.Integer, nullable=True)
     status = db.Column(db.Enum(Status), nullable=False, default=Status.CREATED)
+    message = db.Column(db.String(255), nullable=True)
     started_at = db.Column(db.DateTime(), nullable=True)
     created_at = db.Column(db.DateTime(), nullable=False, default=datetime.now(timezone.utc))

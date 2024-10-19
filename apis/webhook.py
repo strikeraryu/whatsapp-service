@@ -21,7 +21,7 @@ def webhook_qr_code():
 def session_update():
     data = request.get_json()
     uuid = data.get('uuid')
-    login_success = data.get('success', False)
+    login_success = data.get('login_success', False)
     message = data.get('message')
     session = Session.query.get(uuid)
 
@@ -46,12 +46,17 @@ def action_update():
     data = request.get_json()
     action_id = data.get('action_id')
     code = data.get('code')
+    message = data.get('message')
 
     action = Action.query.get(action_id)
     if action and code in EXIT_CODES:
         action.status = Action.Status.STOPPED
+        action.message = message
         db.session.commit()
 
-
+        if action.action_type == Action.ActionType.LOGIN and code == 1:
+            SocketHandler(action.uuid).send({
+                "message_type": "login_update", "data": {"success": False, "message": "Login Failed"}
+            })
 
     return jsonify({'success': True})

@@ -1,221 +1,193 @@
 const qrcode = require('qrcode-terminal');
 const { Client, RemoteAuth } = require('whatsapp-web.js');
-const dotenv = require('dotenv');
-const axios = require('axios');
-const fs = require('fs');
-const { AwsS3Store } = require('wwebjs-aws-s3');
-const {
-    S3Client,
-    PutObjectCommand,
-    HeadObjectCommand,
-    GetObjectCommand,
-    DeleteObjectCommand
-} = require('@aws-sdk/client-s3');
+const logger = require('./logger');
+const { config, store } = require('./config');
+const API = require('./api');
 
-
-dotenv.config();
-
-const USER_SESSION_PATH = process.env.USER_SESSION_PATH || 'user_session';
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
-
-const s3 = new S3Client({
-    region: process.env.AWS_REGION || 'ap-south-1',
-    credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-        sessionToken: process.env.AWS_SESSION_TOKEN
-    }
-});
-
-const putObjectCommand = PutObjectCommand;
-const headObjectCommand = HeadObjectCommand;
-const getObjectCommand = GetObjectCommand;
-const deleteObjectCommand = DeleteObjectCommand;
-
-const store = new AwsS3Store({
-    bucketName: process.env.BUCKET_NAME,
-    remoteDataPath: 'sessions/',
-    s3Client: s3,
-    putObjectCommand,
-    headObjectCommand,
-    getObjectCommand,
-    deleteObjectCommand
-});
-
-
-function log(message, level = "INFO") {
-    console.log(`[${level}] [${new Date().toISOString()}] - ${message}`);
-}
-
-async function quit_session(success) {
-    try {
-        const data = { action_id: process.env.ACTION_ID, code: success ? 0 : 1 };
-        await sendRequest('/webhook/action/update', data);
-    } catch (e) {
-        log(`An error occurred: ${e}`);
-    }
-
-    log("Quitting session...");
-    process.exit(success ? 0 : 1);
-}
-
-function validAction() {
-    return process.env.UUID != null;
-}
-
-async function sendRequest(path, data, method = 'POST') {
-    log(`Sending request to ${path}, method: ${method}, data: ${JSON.stringify(data)}`);
-
-    const url = `${BASE_URL}/${path}`;
-
-    try {
-        const response = method === 'GET'
-            ? await axios.get(url, { params: data })
-            : await axios.post(url, data);
-        log(`Response: ${JSON.stringify(response.data)}`);
-        return response.data;
-    } catch (e) {
-        log(`An error occurred: ${e}`);
-        return { success: false };
-    }
-}
-
-async function sendQrCode(qrCode) {
-    const uuid = process.env.UUID;
-    const data = { uuid, qr_code: qrCode };
-
-    log(`Sending QR code to server...`);
-    qrcode.generate(qrCode, { small: true });
-
-    return (await sendRequest('webhook/qr_code', data)).success;
-}
-
-async function loginSuccess(uuid) {
-    log("Session logged in successfully");
-    try {
-        const data = { uuid, message: "Logged in successfully", login_success: true };
-        await sendRequest('/webhook/login/update', data);
-        return true;
-    } catch (e) {
-        log(`Failed to upload session data: ${e}`, "ERROR");
-        return false;
-    }
-}
-
-async function loginFailed(uuid, message = "Login failed") {
-    log(message, "ERROR");
-    try {
-        const data = { uuid, message, login_success: false };
-        const response = await sendRequest('/webhook/login/update', data);
-
-        return response.success;
-    } catch (e) {
-        log(`Failed to update session data: ${e}`, "ERROR");
-        return false;
-    }
-}
-
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-
-async function startLoginSession(uuid) {
-    log("Starting login session...");
-
-    const client = new Client({
-        authStrategy: new RemoteAuth({
-            clientId: `${uuid}`,
-            dataPath: USER_SESSION_PATH,
-            store: store,
-            backupSyncIntervalMs: 600000
-        }),
-        puppeteer: {
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+class Action {
+    constructor(uuid, actionId) {
+        this.name = 'login-session';
+        this.api = new API(config.BASE_URL);
+        this.timeoutId = null;
+        this.uuid = uuid;
+        this.actionId = actionId;
+        this.message = "Action Login Session";
+        this.state = {
+            IsNewLogin: false,
+            IsAuthenticated: false,
+            IsReady: false,
+            IsRemoteSessionSaved: false,
+            hasError: false
         }
-    });
-    let isClientReady = false;
 
-    client.on('qr', async (qr) => {
-        log("QR Code received");
-        const success = await sendQrCode(qr);
+        this.client = new Client({
+            authStrategy: new RemoteAuth({
+                clientId: `${this.uuid}`,
+                dataPath: config.USER_SESSION_PATH,
+                store: store,
+                backupSyncIntervalMs: 600000
+            }),
+            puppeteer: {
+                headless: true,
+                args: ['--no-sandbox', '--disable-setuid-sandbox']
+            }
+        });
 
-        if (!success) {
-            log("Failed to send QR code to server", "ERROR");
-            quit_session(false);
-        }
-    });
 
-    const processSession = async () => {
-        if (isClientReady) {
-            console.log("Processing session...");
-            const success = await loginSuccess(uuid);
+        this.setupTimeout();
+        setInterval(async () => {
+            await this.checkState();
+        }, 1000);
+    }
 
-            if (!success) {
-                await loginFailed(uuid, "Failed to update after login success");
+    setupTimeout() {
+        this.timeoutId = setTimeout(async () => {
+            this.state.hasError = true;
+            this.message = "Action timed out";
+        }, config.TIMEOUT_MS);
+    }
+
+    async cleanup(force = false) {
+        try {
+            let loginSuccess = false;
+            if (force || this.state.hasError) {
+                this.message = force ? "Action force quit" : this.message;
+                loginSuccess = false;
+            } else if (this.state.IsAuthenticated) {
+                loginSuccess = true;
+            } else {
+                loginSuccess = false;
             }
 
-            await client.destroy();
-            quit_session(success);
+
+            logger.info(`Message: ${this.message}`, loginSuccess ? "INFO" : "ERROR");
+
+            await this.api.sendRequest('/webhook/login/update', {
+                uuid: this.uuid, login_success: loginSuccess, message: this.message
+            });
+            await this.api.sendRequest('/webhook/action/update', {
+                action_id: this.actionId, code: loginSuccess ? 0 : 1, message: this.message 
+            });
+
+            this.client.destroy();
+            process.exit(loginSuccess ? 0 : 1);
+        } catch (e) {
+            logger.error(`Unexpected error: ${e}`, "ERROR");
+
+            await api.sendRequest('/webhook/login/update', {
+                uuid: this.uuid, login_success: false, message: "Unexpected error" 
+            });
+            await api.sendRequest('/webhook/action/update', {
+                action_id: this.actionId, code: 1, message: e 
+            });
+
+            process.exit(1);
         }
-    };
+    }
 
-    client.on('remote_session_saved', () => {
-        log("Remote session saved");
-        processSession();
-    });
-
-    client.on('ready', () => {
-        log("Client is ready!");
-        isClientReady = true;
-    });
-
-    client.on('authenticated', async () => {
-        log("authenticated");
-    });
-
-    client.on('auth_failure', async () => {
+    async checkState() {
         try {
-            log("Authentication failed", "ERROR");
-            await loginFailed(uuid, "Authentication failed");
-
-            await client.destroy();
-            quit_session(false);
-        } catch (error) {
-            await loginFailed(uuid, `Initialization failed: ${error.message}`);
-
-            await client.destroy();
-            quit_session(false);
+            if (this.state.hasError) {
+                this.cleanup();
+            } else if (this.state.IsNewLogin && this.state.IsAuthenticated && this.state.IsReady && this.state.IsRemoteSessionSaved) {
+                this.message = "Login successful";
+                this.cleanup();
+            } else if (!this.state.IsNewLogin && this.state.IsAuthenticated && this.state.IsReady) {
+                this.message = "Already logged in";
+                this.cleanup();
+            }
+        } catch (e) {
+            logger.error(`Unexpected error: ${e}`, "ERROR");
+            this.cleanup(force = true);
         }
-    });
+    }
 
-    try {
-        await client.initialize();
-    } catch (error) {
-        await loginFailed(uuid, `Initialization failed: ${error.message}`);
+    async safe(callback, ...args) {
+        try {
+            await callback(...args);
+        } catch (e) {
+            logger.error(`Unexpected error: ${e}`, "ERROR");
 
-        await client.destroy();
-        quit_session(false);
+            this.message = "Unexpected error";
+            this.state.hasError = true;
+        }
+    }
+
+    async execute() {
+        logger.info("Starting login session...");
+
+        this.client.on('qr', async (qr_code) => {
+            this.safe(async (qr_code) => {
+                logger.info("QR Code received");
+
+                this.state.IsNewLogin = true;
+                qrcode.generate(qr_code, { small: true });
+
+                const response = await this.api.sendRequest('/webhook/qr_code', { uuid: this.uuid, qr_code });
+
+                if (!response.success) {
+                    this.message = "Failed to send QR code";
+                    this.state.hasError = true;
+                }
+            }, qr_code);
+        });
+
+        this.client.on('remote_session_saved', () => {
+            this.safe(async () => {
+                logger.info("Remote session saved");
+
+                this.state.IsRemoteSessionSaved = true;
+            })
+        });
+
+        this.client.on('ready', () => {
+            this.safe(async () => {
+                logger.info("Client is ready!");
+
+                this.state.IsReady = true;
+            })
+        });
+
+        this.client.on('authenticated', async () => {
+            this.safe(async () => {
+                logger.info("Client authenticated");
+
+                this.state.IsAuthenticated = true;
+            })
+        });
+
+        this.client.on('auth_failure', async () => {
+            this.safe(async () => {
+                logger.info("Authentication failed");
+
+                this.state.IsAuthenticated = false;
+            })
+        });
+
+        try {
+            await this.client.initialize();
+        } catch (error) {
+            logger.error(`Failed to initialize client: ${error}`, "ERROR");
+
+            this.message = "Failed to initialize client";
+            this.state.hasError = true;
+        }
     }
 }
 
 if (require.main === module) {
-    log("Starting...");
+    logger.info("Starting...");
 
     try {
-        if (validAction()) {
-            const uuid = process.env.UUID;
-            startLoginSession(uuid).catch(error => {
-                log(`Unexpected error: ${error}`, "ERROR");
-                quit_session(false);
-            });
+        if (process.env.UUID && process.env.ACTION_ID) {
+            const action = new Action(process.env.UUID, process.env.ACTION_ID);
+            action.execute();
         } else {
-            log("Invalid action", "ERROR");
-            quit_session(false);
+            logger.error("Invalid action", "ERROR");
+            process.exit(1);
         }
     } catch (error) {
-        log(`Unexpected error: ${error}`, "ERROR");
-        quit_session(false);
+        logger.error(`Unexpected error: ${error}`, "ERROR");
+        process.exit(1);
     }
 }
