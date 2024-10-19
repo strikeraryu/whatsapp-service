@@ -1,0 +1,16 @@
+services:
+  login-session:
+    image: whatsapp-action-node:v0
+    volumes:
+      - ./actions/login-session/:/usr/src/app/action
+    env_file: .env
+    network_mode: host
+    command: node action/index.js
+  send-message:
+    image: whatsapp-action-node:v0
+    volumes:
+      - ./actions/send-message/:/usr/src/app/action
+    env_file: .env
+    network_mode: host
+    command: node action/index.js
+
