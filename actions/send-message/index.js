@@ -151,16 +151,16 @@ async function startLoginSession(uuid) {
         }
     };
 
-    client.on('message_create', message => {
-        if (message.body === '!ping') {
-            client.sendMessage(message.from, "Hello from bot").then(response => {
-                console.log('Message sent successfully:', response);
-            }).catch(err => {
-                console.error('Failed to send message:', err);
-            });
-        }
-
-    });
+    // client.on('message_create', message => {
+    //     if (message.body === '!ping') {
+    //         client.sendMessage(message.from, "Hello from bot").then(response => {
+    //             console.log('Message sent successfully:', response);
+    //         }).catch(err => {
+    //             console.error('Failed to send message:', err);
+    //         });
+    //     }
+    //
+    // });
 
     client.on('remote_session_saved', () => {
         log("Remote session saved");
@@ -173,7 +173,7 @@ async function startLoginSession(uuid) {
 
         await sleep(10000);
 
-        client.sendMessage("919643662467@c.us", "New message").then(response => {
+        client.sendMessage("91@c.us", "Test Message").then(response => {
             console.log('Message sent successfully:', response);
         }).catch(err => {
             console.error('Failed to send message:', err);
