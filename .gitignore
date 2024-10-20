@@ -12,3 +12,4 @@ venv.bak/
 
 instance/
 migrations/
+gluetun/
