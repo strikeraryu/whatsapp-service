@@ -49,24 +49,23 @@ class Action {
 
     async cleanup(force = false) {
         try {
+            let state = 'failed';
             let loginSuccess = false;
             if (force || this.state.hasError) {
                 this.message = force ? "Action force quit" : this.message;
-                loginSuccess = false;
-            } else if (this.state.IsAuthenticated) {
+            } else if (this.state.IsAuthenticated && this.state.IsReady) {
+                state = 'saved';
                 loginSuccess = true;
-            } else {
-                loginSuccess = false;
             }
 
 
             logger.info(`Message: ${this.message}`, loginSuccess ? "INFO" : "ERROR");
 
             await this.api.sendRequest('/webhook/login/update', {
-                uuid: this.uuid, login_success: loginSuccess, message: this.message
+                uuid: this.uuid, state: state, message: this.message
             });
             await this.api.sendRequest('/webhook/action/update', {
-                action_id: this.actionId, code: loginSuccess ? 0 : 1, message: this.message 
+                action_id: this.actionId, code: loginSuccess ? 0 : 1, message: this.message
             });
 
             this.client.destroy();
@@ -75,10 +74,10 @@ class Action {
             logger.error(`Unexpected error: ${e}`, "ERROR");
 
             await api.sendRequest('/webhook/login/update', {
-                uuid: this.uuid, login_success: false, message: "Unexpected error" 
+                uuid: this.uuid, state: "failed", message: "Unexpected error"
             });
             await api.sendRequest('/webhook/action/update', {
-                action_id: this.actionId, code: 1, message: e 
+                action_id: this.actionId, code: 1, message: e
             });
 
             process.exit(1);
@@ -90,7 +89,7 @@ class Action {
             if (this.state.hasError) {
                 this.cleanup();
             } else if (this.state.IsNewLogin && this.state.IsAuthenticated && this.state.IsReady && this.state.IsRemoteSessionSaved) {
-                this.message = "Login successful";
+                this.message = "Login and Session Saved successful";
                 this.cleanup();
             } else if (!this.state.IsNewLogin && this.state.IsAuthenticated && this.state.IsReady) {
                 this.message = "Already logged in";
@@ -151,6 +150,14 @@ class Action {
         this.client.on('authenticated', async () => {
             this.safe(async () => {
                 logger.info("Client authenticated");
+
+                if (this.state.IsNewLogin) {
+                    this.api.sendRequest('/webhook/login/update', {
+                        uuid: this.uuid, state: "unsaved_authenticated",
+                        message: "You are logged in but it can take 1 minute to save your session"
+                    });
+                }
+
 
                 this.state.IsAuthenticated = true;
             })

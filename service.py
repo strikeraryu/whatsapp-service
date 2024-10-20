@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, request, make_response
 from flask_socketio import SocketIO
 from flask_cors import CORS
 from apis.core import core_bp
@@ -20,7 +20,20 @@ migrate = Migrate(app, db)
 socketio = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=True)
 
 # Setup CORS
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+def build_cors_preflight_response():
+    response = make_response()
+    response.headers.add("Access-Control-Allow-Origin", "https://ws-service.strikeraryu.com")
+    response.headers.add('Access-Control-Allow-Headers', "*")
+    response.headers.add('Access-Control-Allow-Methods', "*")
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
+
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        return build_cors_preflight_response()
 
 # Register blueprints
 app.register_blueprint(core_bp)

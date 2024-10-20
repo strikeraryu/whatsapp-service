@@ -21,23 +21,27 @@ def webhook_qr_code():
 def session_update():
     data = request.get_json()
     uuid = data.get('uuid')
-    login_success = data.get('login_success', False)
+    login_state = data.get('state') # saved, failed, unsaved_authenticated
     message = data.get('message')
     session = Session.query.get(uuid)
 
     if not session:
         return "Bad Request", 400
 
-    session.logged_in = login_success
-    if login_success:
-        session.last_login_at = db.func.now()
-    db.session.commit()
-
     data = {
-        'success': login_success,
+        'state': login_state,
         'message': message
     }
+
+    if login_state == 'saved':
+        session.logged_in = True
+        session.last_login_at = db.func.now()
+    elif login_state == 'failed':
+        session.logged_in = False
+
+    db.session.commit()
     SocketHandler(uuid).send({"message_type": "login_update", "data": data})
+
 
     return jsonify({'success': True})
 

@@ -4,7 +4,7 @@ from datetime import timedelta
 
 class ActionManager():
     MAX_LIVE_TIME = timedelta(minutes=15)
-    MAX_RUNNING_ACTIONS = 1
+    MAX_RUNNING_ACTIONS = 5
 
     def __init__(self, uuid):
         self.cleanup()
